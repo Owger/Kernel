@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+ 
+# ---- Configuration -----------------------------------------------------
+ 
+export TARGET=x86_64-elf
+export PREFIX="$HOME/opt/cross"
+export PATH="$PREFIX/bin:$PATH"
+ 
+BINUTILS_VERSION="2.42"
+GCC_VERSION="13.2.0"
+ 
+SRC_DIR="$HOME/src/cross-toolchain"
+BUILD_DIR="$SRC_DIR/build"
+ 
+BINUTILS_TARBALL="binutils-${BINUTILS_VERSION}.tar.xz"
+GCC_TARBALL="gcc-${GCC_VERSION}.tar.xz"
+ 
+BINUTILS_URL="https://ftp.gnu.org/gnu/binutils/${BINUTILS_TARBALL}"
+GCC_URL="https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/${GCC_TARBALL}"
+ 
+# Number of parallel build jobs
+JOBS="$(nproc 2>/dev/null || echo 2)"
+ 
+# ---- Sanity / prerequisites ---------------------------------------------
+ 
+echo "==> Target platform: $(uname -m) (this can be arm64/aarch64 — that's fine)"
+echo "==> Building cross-compiler for target: ${TARGET}"
+echo "==> Install prefix: ${PREFIX}"
+echo
+ 
+if command -v apt-get >/dev/null 2>&1; then
+  echo "==> Installing build dependencies via apt..."
+  sudo apt-get update
+  sudo apt-get install -y \
+    build-essential bison flex libgmp-dev libmpc-dev libmpfr-dev \
+    texinfo libisl-dev wget curl gcc g++ make
+else
+  echo "!! apt-get not found. Install these yourself before continuing:"
+  echo "   build-essential bison flex libgmp-dev libmpc-dev libmpfr-dev texinfo libisl-dev"
+fi
+ 
+mkdir -p "$SRC_DIR" "$BUILD_DIR" "$PREFIX"
+cd "$SRC_DIR"
+ 
+# ---- Download sources -----------------------------------------------------
+ 
+if [ ! -f "$BINUTILS_TARBALL" ]; then
+  echo "==> Downloading binutils ${BINUTILS_VERSION}..."
+  wget -q --show-progress "$BINUTILS_URL"
+fi
+ 
+if [ ! -f "$GCC_TARBALL" ]; then
+  echo "==> Downloading gcc ${GCC_VERSION}..."
+  wget -q --show-progress "$GCC_URL"
+fi
+ 
+echo "==> Extracting sources..."
+tar -xf "$BINUTILS_TARBALL"
+tar -xf "$GCC_TARBALL"
+ 
+BINUTILS_SRC="$SRC_DIR/binutils-${BINUTILS_VERSION}"
+GCC_SRC="$SRC_DIR/gcc-${GCC_VERSION}"
+ 
+# ---- Build binutils ---------------------------------------------------
+ 
+echo "==> Building binutils..."
+mkdir -p "$BUILD_DIR/binutils"
+cd "$BUILD_DIR/binutils"
+ 
+"$BINUTILS_SRC/configure" \
+  --target="$TARGET" \
+  --prefix="$PREFIX" \
+  --with-sysroot \
+  --disable-nls \
+  --disable-werror
+ 
+make -j"$JOBS"
+make install
+ 
+# ---- Build GCC (freestanding, C only, plus libgcc) ---------------------
+ 
+echo "==> Checking for a working assembler/linker on PATH..."
+which -- "$TARGET-as" || { echo "binutils build failed to produce ${TARGET}-as"; exit 1; }
+which -- "$TARGET-ld" || { echo "binutils build failed to produce ${TARGET}-ld"; exit 1; }
+ 
+echo "==> Building GCC (this is the long part — grab a coffee)..."
+mkdir -p "$BUILD_DIR/gcc"
+cd "$BUILD_DIR/gcc"
+ 
+"$GCC_SRC/configure" \
+  --target="$TARGET" \
+  --prefix="$PREFIX" \
+  --disable-nls \
+  --enable-languages=c,c++ \
+  --without-headers
+ 
+make -j"$JOBS" all-gcc
+make -j"$JOBS" all-target-libgcc
+make install-gcc
+make install-target-libgcc
+ 
+echo
+echo "=========================================================="
+echo " Done! Add this to your ~/.bashrc (or ~/.zshrc):"
+echo
+echo "   export PATH=\"$PREFIX/bin:\$PATH\""
+echo
+echo " Then verify with:"
+echo "   ${TARGET}-gcc --version"
+echo "   ${TARGET}-gcc -print-multi-lib"
+echo "=========================================================="
+ 
