@@ -24,23 +24,23 @@ achievable and is what most OSDev-community projects mean by "done."
 Before building forward, the current boot path has some rough edges worth
 cleaning up so they don't bite later.
 
-- [ ] Replace the single hardcoded VGA string write with a real
+- [x] Replace the single hardcoded VGA string write with a real
       `terminal_putchar` / `terminal_write` / `terminal_writestring` set of
       functions, including a cursor position and basic scrolling when text
       reaches the bottom of the screen.
-- [ ] Add a `printf`-style formatted output function (even a minimal one
+- [x] Add a `printf`-style formatted output function (even a minimal one
       supporting `%s %d %x %c`) — you will want this constantly from here on
       for debugging.
-- [ ] Add serial port (COM1, `0x3F8`) output as a second, more reliable
+- [x] Add serial port (COM1, `0x3F8`) output as a second, more reliable
       debug channel — useful once VGA becomes unreliable (e.g. mid interrupt
       setup) or when running headless.
-- [ ] Set up a `panic()` function: prints a message, dumps registers if
+- [x] Set up a `panic()` function: prints a message, dumps registers if
       possible, and halts — so failures are diagnosable instead of silent
       hangs or triple faults.
-- [ ] Write actual comments into `boot.S` explaining *why* each page-table /
+- [x] Write actual comments into `boot.S` explaining *why* each page-table /
       long-mode step exists, not just what it does — future you will thank
       present you.
-- [ ] Decide on and document a consistent kernel coding style now
+- [x] Decide on and document a consistent kernel coding style now
       (naming, indentation, header layout) before the codebase grows enough
       that changing it later is painful.
 
