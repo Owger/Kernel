@@ -1,13 +1,47 @@
 /* boot.S — multiboot2 entry point + long mode setup
  *
  * GRUB/QEMU's multiboot loader always drops us in 32-bit protected mode,
- * regardless of the target CPU. This file:
- *   1. Advertises a multiboot2 header so GRUB can load us directly
- *   2. Sanity-checks that multiboot, CPUID, and long mode are available
- *   3. Builds minimal page tables (identity-maps the first 1GB)
- *   4. Enables PAE + long mode + paging
- *   5. Loads a 64-bit GDT and far-jumps into 64-bit code
- *   6. Calls into kernel_main (compiled C, 64-bit)
+ * regardless of the target CPU — there is no way to ask GRUB to hand off
+ * directly into 64-bit mode. So every x86_64 bare-metal kernel needs code
+ * like this to bridge the gap. This file:
+ *
+ *   1. Advertises a multiboot2 header so GRUB can load us directly.
+ *      (Why multiboot2 and not v1: v1 requires the header within the
+ *      first 8KB of the file, which modern linker output can blow past
+ *      surprisingly easily due to alignment padding. v2 gives a 32KB
+ *      window, which is far more forgiving.)
+ *
+ *   2. Sanity-checks that multiboot, CPUID, and long mode are available.
+ *      (Why: if any of these are missing, continuing would eventually
+ *      crash in a confusing way deep in the paging/GDT setup. Failing
+ *      loudly and immediately here is much easier to debug.)
+ *
+ *   3. Builds minimal page tables identity-mapping the first 1GB.
+ *      (Why: x86_64 long mode REQUIRES paging to be enabled — there is no
+ *      "64-bit mode without paging" option, unlike 32-bit protected mode.
+ *      Identity mapping — virtual address == physical address — is the
+ *      simplest possible page table setup and is enough to get the
+ *      kernel itself running before anything fancier is needed.)
+ *
+ *   4. Enables PAE + long mode + paging via CR4/EFER/CR0.
+ *      (Why this exact order matters: PAE must be on before long mode
+ *      can be enabled, and long mode must be enabled in EFER before
+ *      paging is turned on in CR0 — the CPU checks this ordering and
+ *      will fault if it's wrong.)
+ *
+ *   5. Loads a 64-bit GDT and far-jumps into 64-bit code.
+ *      (Why a far jump specifically: changing CS via a regular jump/call
+ *      doesn't reload the CPU's internal notion of code segment
+ *      attributes: only a far jump, interrupt return, or task switch
+ *      actually flips the CPU into 64-bit instruction decoding.)
+ *
+ *   6. Calls into kernel_main (compiled C, 64-bit).
+ *      (Why cli first: no IDT exists yet at this point. Any interrupt —
+ *      most commonly the timer — firing before one exists causes a fault
+ *      the CPU also can't handle, cascading into a triple fault and a
+ *      full machine reset. This bit us during initial bring-up and looks
+ *      exactly like "the kernel worked for a split second, then
+ *      rebooted" — see the README's troubleshooting section.)
  */
  
 .set MB2_MAGIC,  0xE85250D6   /* multiboot2 magic */
