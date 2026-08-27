@@ -1,12 +1,35 @@
-# Requires the x86_64-elf cross-compiler built earlier to be on your PATH:
-#   export PATH="$HOME/opt/cross/bin:$PATH"
-# and: apt install qemu-system-x86 grub-pc-bin grub-common xorriso mtools
+# Run ./setup.sh once to install everything this needs.
+#
+# Toolchain selection, in order of preference:
+#   1. x86_64-elf-gcc        the purpose-built bare-metal cross compiler
+#                            (./setup.sh --toolchain=source, or the older
+#                            ./x86_64-elf script). Needs ~/opt/cross/bin on PATH.
+#   2. x86_64-linux-gnu-gcc  Debian's cross compiler, from the
+#                            gcc-x86-64-linux-gnu package. This is what
+#                            ./setup.sh installs by default on an arm64 host.
+#   3. plain gcc             only when building on an x86_64 machine.
+#
+# Every flag below already makes the compiler forget it has a host OS, so a
+# linux-gnu targeted compiler produces the same freestanding kernel as an
+# elf targeted one. Override the choice with e.g. `make CROSS=x86_64-elf-`.
 
-TARGET := x86_64-elf
-CC     := $(TARGET)-gcc
+CROSS ?= $(shell \
+    if command -v x86_64-elf-gcc       >/dev/null 2>&1; then echo x86_64-elf-;       \
+    elif command -v x86_64-linux-gnu-gcc >/dev/null 2>&1; then echo x86_64-linux-gnu-; \
+    elif [ "`uname -m`" = "x86_64" ];    then echo "";                                \
+    else echo NO-X86_64-TOOLCHAIN-FOUND; fi)
 
+ifeq ($(CROSS),NO-X86_64-TOOLCHAIN-FOUND)
+$(error No x86_64 compiler found. Run ./setup.sh, or put ~/opt/cross/bin on your PATH)
+endif
+
+CC := $(CROSS)gcc
+
+# -fcf-protection=none: Debian's x86_64 gcc defaults to emitting CET/endbr64
+# instrumentation, which is pointless in a kernel that has no CET setup.
 CFLAGS  := -ffreestanding -fno-stack-protector -fno-pic -m64 \
            -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+           -fcf-protection=none \
            -Wall -Wextra -O2
 LDFLAGS := -ffreestanding -O2 -nostdlib -T linker.ld \
            -Wl,-z,max-page-size=0x1000 -Wl,-z,noseparate-code \
@@ -44,8 +67,16 @@ kernel.iso: kernel.elf grub.cfg
 	cp grub.cfg isodir/boot/grub/grub.cfg
 	grub-mkrescue -o kernel.iso isodir
 
+# Boot in a QEMU window. Needs a display, so not usable over plain SSH.
 run: kernel.iso
 	qemu-system-x86_64 -cdrom kernel.iso -boot d
+
+# Boot headless, with the emulated COM1 serial port wired to this terminal.
+# This is the one to use on a remote VM. Quit QEMU with Ctrl-A then X.
+# On a non-x86 host this runs under TCG emulation, so give it a few seconds.
+run-serial: kernel.iso
+	qemu-system-x86_64 -cdrom kernel.iso -boot d \
+	    -display none -serial mon:stdio -no-reboot
 
 # Old direct-kernel-load path, kept for reference/debugging only —
 # unreliable with some binutils/QEMU combos, prefer `make run`.
@@ -56,4 +87,4 @@ clean:
 	rm -f *.o kernel.elf kernel.iso
 	rm -rf isodir
 
-.PHONY: all run run-direct clean
+.PHONY: all run run-serial run-direct clean
