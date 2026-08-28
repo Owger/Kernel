@@ -17,18 +17,97 @@ Built from an ARM64 Linux host using a custom cross-compiler.
 | `linker.ld` | Tells the linker where in memory to load everything (starting at 1MB). |
 | `grub.cfg` | Tells GRUB how to find and boot `kernel.elf`. |
 | `Makefile` | Builds everything and boots it in QEMU. |
-| `build-x86_64-elf-toolchain.sh` | One-time script to build the cross-compiler itself (see Section 2). |
+| `setup.sh` | One-shot provisioning script for a fresh Debian machine (see Section 2). |
+| `x86_64-elf` | Builds the `x86_64-elf` cross-compiler from source (see Section 3). |
 
 ---
 
-## 2. One-time setup: build the cross-compiler
+## 2. Quick start on a fresh Debian machine (including arm64)
+
+```bash
+./setup.sh
+```
+
+That installs every dependency, builds the kernel, packages the ISO, boots
+it under QEMU, and checks that real output came back over the serial port.
+On a fresh Debian VM it takes a few minutes. It is safe to re-run — each
+step detects what is already in place and skips it.
+
+Options:
+
+| Flag | Effect |
+|---|---|
+| `--toolchain=apt` | Use Debian's `gcc-x86-64-linux-gnu`. Minutes. **Default.** |
+| `--toolchain=source` | Build a true `x86_64-elf` GCC via `./x86_64-elf`. 20–60+ min. |
+| `--no-qemu` | Don't install QEMU (build-only machine). |
+| `--no-efi` | Make the ISO BIOS-bootable only, not UEFI. |
+| `--no-verify` | Skip the build + boot smoke test at the end. |
+| `--suite=NAME` | Override the detected Debian suite. |
+
+### What's different about an arm64 host
+
+This kernel is x86_64. On an arm64 VM *nothing* about the build is native,
+and three things need attention:
+
+**1. The compiler.** Your system `gcc` emits arm64 code. `setup.sh` installs
+`gcc-x86-64-linux-gnu`, which is packaged for arm64 and targets x86_64. It's
+a `linux-gnu` compiler rather than a bare `x86_64-elf` one, but the Makefile
+already passes `-ffreestanding -nostdlib -no-pie -fno-pic`, which strips out
+every assumption it would otherwise make about running under an OS. The
+resulting kernel is identical in the ways that matter. Building the textbook
+`x86_64-elf` toolchain still works — it's just an hour instead of a minute.
+
+**2. GRUB's x86 modules — the one genuine obstacle.** `grub-mkrescue` itself
+comes from `grub-common`, which *is* built for arm64 and is target-agnostic.
+But the platform payloads it embeds into the ISO live in separate packages:
+
+| Package | Provides | Built for |
+|---|---|---|
+| `grub-pc-bin` | `/usr/lib/grub/i386-pc` (BIOS boot) | amd64, i386 **only** |
+| `grub-efi-amd64-bin` | `/usr/lib/grub/x86_64-efi` (UEFI boot) | amd64, i386 **only** |
+
+So `sudo apt install grub-pc-bin` — the command in most OSDev guides, and in
+Section 4 below — simply fails on arm64, and `grub-mkrescue` then dies with
+`cannot find /usr/lib/grub/i386-pc`.
+
+`apt install grub-pc-bin:amd64` is *not* the fix. It depends on `grub-common`
+at an exact version, so multi-arch resolution tries to replace your arm64
+`grub-common` with the amd64 one, leaving `grub-mkrescue` as an x86 binary
+your machine can't execute.
+
+What `setup.sh` does instead: those packages contain no host executables,
+only x86 payloads that get embedded into the ISO and never run on the build
+machine. So it downloads the amd64 `.deb` **without installing it**, and
+unpacks just the platform directory into `/usr/lib/grub/`, where
+`grub-mkrescue` looks. It checks the version matches your `grub-common` and
+warns on skew, since the tool and its modules ship from one source package
+and a mismatch can produce an ISO that hangs at boot. To undo it, delete
+`/usr/lib/grub/i386-pc` (each installed directory is tagged with a
+`.installed-by-kernel-setup` marker file).
+
+**3. QEMU runs under TCG, not KVM.** KVM can only accelerate a guest of the
+host's own ISA, so on arm64 `qemu-system-x86_64` emulates every instruction
+in software. This works fine and needs no special flags — it's just slower.
+Expect a few seconds to reach `kernel_main` rather than milliseconds. Don't
+pass `-enable-kvm` on arm64; it will refuse to start.
+
+If your arm64 box is a headless VM you reach over SSH, use `make run-serial`
+rather than `make run` — see Section 4.
+
+---
+
+## 3. Manual setup: build the cross-compiler from source
+
+`./setup.sh` (Section 2) handles this for you and is the recommended path.
+This section is for building the `x86_64-elf` toolchain by hand, which is
+what `./setup.sh --toolchain=source` runs.
 
 You need a compiler that targets **x86_64-elf** (bare metal, no OS) — your
 system's normal `gcc` targets your host OS and won't work for this.
 
 ```bash
-chmod +x build-x86_64-elf-toolchain.sh
-./build-x86_64-elf-toolchain.sh
+chmod +x x86_64-elf
+./x86_64-elf
 ```
 
 This downloads and builds `binutils` + `gcc` from source. **Takes 20–60+
@@ -69,16 +148,21 @@ memory-hungry. Fixes, in order of preference:
 
 ---
 
-## 3. Build and run the kernel
+## 4. Build and run the kernel
 
-Also needs GRUB's ISO tools (one-time):
+If you ran `./setup.sh`, everything below already works. Otherwise install
+GRUB's ISO tools by hand (one-time):
 ```bash
 sudo apt install qemu-system-x86 grub-pc-bin grub-common xorriso mtools
 ```
+**On an arm64 host that `grub-pc-bin` will not install** — it isn't built for
+arm64. See Section 2, or just run `./setup.sh`.
 
 Then, every time you want to build and boot:
 ```bash
-make run
+make run          # opens a QEMU window — needs a display
+make run-serial   # headless: kernel output comes back over COM1 to your
+                  # terminal. Use this over SSH. Quit with Ctrl-A then X.
 ```
 
 This compiles `boot.S` + `kernel.c` → `kernel.elf`, packages it into a
@@ -89,13 +173,20 @@ see:
 Hello, x86_64 kernel world!
 ```
 
-on an otherwise blank screen.
+`make run` shows this on an otherwise blank screen; `make run-serial` shows
+the `kprintf` lines instead, since `terminal_writestring` only writes to VGA
+while `kprintf` goes to both VGA and the serial port.
 
 Other useful targets:
 ```bash
-make clean     # wipe all build artifacts (kernel.elf, kernel.iso, isodir/, *.o)
+make clean       # wipe all build artifacts (kernel.elf, kernel.iso, isodir/, *.o)
 make kernel.elf  # just build, don't run
+make kernel.iso  # build the bootable ISO, don't run
 ```
+
+The Makefile picks a compiler automatically: `x86_64-elf-gcc` if it's on your
+PATH, else `x86_64-linux-gnu-gcc`, else plain `gcc` when you're already on an
+x86_64 machine. Override with `make CROSS=x86_64-elf-`.
 
 **Always do a clean rebuild if something seems stale:**
 ```bash
@@ -106,7 +197,7 @@ make run
 
 ---
 
-## 4. If it doesn't boot — troubleshooting
+## 5. If it doesn't boot — troubleshooting
 
 We hit every one of these getting this working the first time. Check them
 in this order.
@@ -117,9 +208,16 @@ You're not in the right folder, or a file didn't save correctly. Run `ls`
 `grub.cfg`, `Makefile`) together in one folder.
 
 ### "x86_64-elf-gcc: No such file or directory"
-PATH isn't set in this shell session. See Section 2 above — check
+PATH isn't set in this shell session. See Section 3 above — check
 `echo $SHELL` and make sure the export line is in the *matching* rc file
 (`~/.zshrc` vs `~/.bashrc`), then `source` it.
+
+### `grub-mkrescue: error: cannot find /usr/lib/grub/i386-pc`
+You're on a non-x86 host (most likely arm64) and GRUB's BIOS platform modules
+aren't installed — `grub-pc-bin` has no arm64 build, so `apt install
+grub-pc-bin` failed or was never run. Run `./setup.sh`, which fetches the
+amd64 payload and unpacks it into place. Section 2 explains why the obvious
+fix (`apt install grub-pc-bin:amd64`) breaks your system instead.
 
 ### QEMU: "Error loading uncompressed kernel without PVH ELF Note"
 This means the multiboot magic number wasn't found. We eventually solved
@@ -189,7 +287,7 @@ assuming it's a bug in the kernel code itself.
 
 ---
 
-## 5. How the boot process actually works
+## 6. How the boot process actually works
 
 Worth understanding before extending this:
 
@@ -210,7 +308,7 @@ Worth understanding before extending this:
 
 ---
 
-## 6. Natural next steps
+## 7. Natural next steps
 
 Roughly in order of how OS dev tutorials usually build this up:
 - **Print more robustly**: wrap the VGA write in a proper `terminal_write`
